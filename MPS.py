@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from functools import partial
 
 class mps:
     def __init__(self, bond_dim, in_dim, length, l_dim, std,mean, position_l) -> None:
@@ -26,69 +27,123 @@ class mps:
         self.position_l=position_l
 
     
-    def random_perturbed_tensor(self,tensor):
+    def random_perturbed_tensor(self, tensor,mean,std,key):
         """ This function will initialise a random tensor given the shape of the input.
         
         Args:
             - tensor(JAX.numpy.Array: float): Original zeros tensor.
             - mean (float): Mean of the perturbation
             - std: (float): Estandard deviation of the perturbation.
+            - key (int): Key to generate randomness
         Returns:
             tensor ( JAX.numpy.Array: float): perturbed tensor"""
         shape=tensor.shape
-        return jnp.round(tensor + jnp.ones(shape=shape)*self.mean + self.std*jax.random.normal(key=jax.random.PRNGKey(seed=1997),shape=shape), 6)
+    
+        return jnp.round(tensor + jnp.ones(shape=shape)*mean + std*jax.random.normal(key=key,shape=shape), 10)
 
     
     def random_init(self):
         """ This function will initialize a random MPS. In the beggining and in the end of the MPS, the shape of the local tensor in that position
-        will be (physical_bond, bond_dim) and (bond_dim, physical_bond). In the position l, it will be added the l leg at the end of the local tensor,
+        will be (1, physical_bond, bond_dim) and (bond_dim, physical_bond, 1). In the position l, it will be added the l leg at the end of the local tensor,
         ex: (bond_dim, physical_bond, bond_dim, l_leg)
         
         Args:
             Empty
         Returns:
         - mps (list[JAX.Numpy.Array: float], 
-                shape: List[(physical_leg,bond_dim), (bond_dim, physical_leg,bond_dim), ..., (bond_dim, physical_leg, bond_dim, l_leg), 
-                ..., (bond_dim, physical_leg, bond_dim),.., (bond_dim, physical_leg) ]): List representing the full random initialized MPS"""
+                shape: List[(1,physical_leg,bond_dim), (bond_dim, physical_leg,bond_dim), ..., (bond_dim, physical_leg, bond_dim, l_leg), 
+                ..., (bond_dim, physical_leg, bond_dim),.., (bond_dim, physical_leg,1) ]): List representing the full random initialized MPS"""
         
         mps_tensor=[]
-        tensor_init_middle=jnp.zeros(shape=(self.bond_dim, self.in_dim, self.bond_dim))
+        key = jax.random.PRNGKey(1997)
+        # Initialize empty tensors. The shape depends on the position of each one
+        tensor_middle=jnp.zeros(shape=(self.bond_dim, self.in_dim, self.bond_dim))
+        tensor_init=jnp.zeros(shape=(1,self.in_dim, self.bond_dim))
+        tensor_end=jnp.zeros(shape=(self.bond_dim, self.in_dim, 1))
 
-        # Initialize the mps site tensors from 0 to length
-        for index in range(self.length):
-            if index==0:
-                # Initialize first the leftest tensor with l dimension
-                if (self.position_l==0):
-                    tensor_init=jnp.zeros(shape=(self.in_dim, self.bond_dim, self.l_dim))
-                    tensor=self.random_perturbed_tensor(tensor_init)
-                    mps_tensor.append(tensor)
-                 # Initialize first the leftest tensor without l dimension
-                else:
-                    tensor_init=jnp.zeros(shape=(self.in_dim, self.bond_dim))
-                    tensor=self.random_perturbed_tensor(tensor_init)
-                    mps_tensor.append(tensor)
-            
-            elif index==self.length-1:
-                # Last tensor with l dimension
-                if self.position_l==self.length-1:
-                    tensor_init=jnp.zeros(shape=(self.bond_dim, self.in_dim, self.l_dim))
-                    mps_tensor.append(self.random_perturbed_tensor(tensor_init))
-                # Last tensor without l dimension
-                else:
-                    tensor_init=jnp.zeros(shape=(self.bond_dim, self.in_dim))
-                    mps_tensor.append(self.random_perturbed_tensor(tensor_init))
-            
-            # Iterate over the length for the other cases
+        if self.position_l==0:
+            # Initialize first the leftest tensor with l dimension
+            tensor_init_l=jnp.zeros(shape=(1,self.in_dim, self.bond_dim, self.l_dim))
+            mps_tensor.append(self.random_perturbed_tensor(tensor_init_l, self.mean, self.std, key))
+        else:
+            mps_tensor.append(self.random_perturbed_tensor(tensor_init, self.mean, self.std, key))
+        
+        if self.position_l==self.length-1:
+            # Last tensor with l dimension
+            tensor_l=jnp.zeros(shape=(self.bond_dim, self.in_dim, 1, self.l_dim))
+        else:
+             # Tensor in the middle with l dimension
+            tensor_l=jnp.zeros(shape=(self.bond_dim, self.in_dim,self.bond_dim, self.l_dim))
+        
+        jit_rand_pertubed_tensor=jax.jit(partial(self.random_perturbed_tensor))
+        
+
+        # Initialize the mps site tensors from 1 to length
+        for index in range(1,self.length):
+            key, subkey = jax.random.split(key)  # Ensure different keys for each tensor
+
+            if index==self.position_l:
+                mps_tensor.append(self.random_perturbed_tensor(tensor_l, self.mean, self.std, subkey))
             else:
-                if index==self.position_l:
-                    tensor_init=jnp.zeros(shape=(self.bond_dim, self.in_dim,self.bond_dim, self.l_dim))
-                    mps_tensor.append(self.random_perturbed_tensor(tensor_init))
-                else:    
-                    mps_tensor.append(self.random_perturbed_tensor(tensor_init_middle))
+                if index!=self.length-1:
+                    mps_tensor.append(jit_rand_pertubed_tensor(tensor_middle, self.mean, self.std, subkey))
+                else:
+                    mps_tensor.append(self.random_perturbed_tensor(tensor_end, self.mean, self.std, subkey))
 
         return mps_tensor
     
+    def local_orthonormalize_left(self,A,Anext):
+        """Left-orthonormalize a MPS tensor `A` by a QR decomposition, and update tensor at next site.
+        Args:
+            - A (JAX.Numpy.Array: float): Tensor to perform the QR decomposition dim(A)=3,
+            - Anext (JAX.Numpy.Array: float): Tensor to annex the R matrix from the QR decomposition dim(Anext)=3
+        Returns:
+            - A (JAX.Numpy.Array: float): Left orthonormalized tensor.
+            - Anext (JAX.Numpy.Array: float): New adjacent tensor.
+            """
+        # perform QR decomposition and replace A by reshaped Q matrix
 
+        shape = A.shape
+        assert len(shape) == 3
+        Q, R = jnp.linalg.qr(jnp.reshape(A/jnp.linalg.norm(A), (shape[0]*shape[1], shape[2])), mode='reduced')
+        # truncate bond dimension
+        if Q.shape[1]>self.bond_dim:
+            Q=jnp.round(Q[:,self.bond_dim],10)
+            R=jnp.round(R[:self.bond_dim,:],10)
+
+        A = jnp.reshape(Q, (shape[0], shape[1], Q.shape[1]))
+        # update Anext tensor: multiply with R from left
+        Anext = jnp.tensordot(R, Anext, axes=(1, 0))
+        return A, Anext
+    
+    def local_orthonormalize_right(self,A, Aprev,):
+        """
+        Right-orthonormalize a MPS tensor `A` by a QR decomposition,  and update tensor at previous site.
+        Args:
+            - A (JAX.Numpy.Array: float): Tensor to perform the QR decomposition dim(A)=3,
+            - Aprev (JAX.Numpy.Array: float): Tensor to annex the R matrix from the QR decomposition dim(Aprev)=3
+        Returns:
+            - A (JAX.Numpy.Array: float): Left orthonormalized tensor.
+            - Aprev (JAX.Numpy.Array: float): New adjacent tensor. 
+            """
+        
+        # flip left and right virtual bond dimensions
+        A = jnp.transpose(A, (2, 1, 0))
+        # perform QR decomposition and replace A by reshaped Q matrix
+        shape = A.shape
+        assert len(shape) == 3
+        Q, R = jnp.linalg.qr(jnp.reshape(A/jnp.linalg.norm(A), (shape[0]*shape[1], shape[2])))
+        
+        # truncate bond dimension
+        if Q.shape[1]>self.bond_dim:
+            Q=jnp.round(Q[:,self.bond_dim],10)
+            R=jnp.round(R[:self.bond_dim,:],10)
+
+        A = jnp.transpose(jnp.reshape(Q, (shape[0], shape[1], Q.shape[1])), (2, 1, 0))
+        # update Aprev tensor: multiply with R from right
+        Aprev = jnp.tensordot(Aprev, R, axes=(2, 1))
+        return A, Aprev
+    
     def canonical_form(self):
         """ 
         This function will put the random initialized MPS into a left and right canonical . In the beggining and in the end of the MPS, the shape of the local tensor in that position
@@ -99,107 +154,26 @@ class mps:
                 Empty
             Returns:
             - mps (list[JAX.Numpy.Array: float], 
-                    shape: List[(physical_leg,bond_dim), (bond_dim, physical_leg,bond_dim), ..., (bond_dim, physical_leg, bond_dim, l_leg), 
-                    ..., (bond_dim, physical_leg, bond_dim),.., (bond_dim, physical_leg) ]): List representing the left and right canonical random initialized MPS.
+                    shape: List[(1,physical_leg,bond_dim), (bond_dim, physical_leg,bond_dim), ..., (bond_dim, physical_leg, bond_dim, l_leg), 
+                    ..., (bond_dim, physical_leg, bond_dim),.., (bond_dim, physical_leg,1) ]): List representing the left and right canonical random initialized MPS.
         """
         # Get the random MPS
         mps=self.random_init()
-        
-        # Put the MPS into left canonical until position_l -1
+        jit_local_orthonamilize_left=jax.jit(partial(self.local_orthonormalize_left))
+        jit_local_orthonamilize_right=jax.jit(partial(self.local_orthonormalize_right))
+        # Put the MPS into left canonical until position_l
         for index in range( self.position_l-1):
-            # Reshape into a matrix
-            if index==0:
-                dim_i=mps[index].shape[0]
-                dim_j=mps[index].shape[1]
-                B=mps[index]
-            else:
-                dim_i=mps[index].shape[0]
-                dim_j=mps[index].shape[1]
-                dim_k=mps[index].shape[2]
-                B=jnp.reshape(mps[index],[dim_i*dim_j,-1])
-            
-            #Perform svd in the matrix
-            Atemp,Dtemp,Vhtemp=jnp.linalg.svd(B)
-
-            # Perform truncation and normalization singular values
-            if Atemp.shape[1]>self.bond_dim:
-                Atemp=Atemp[:,:self.bond_dim]
-                Atemp=jnp.round(Atemp, 6)
-                Vhtemp=jnp.round(Vhtemp[:self.bond_dim,:], 6)
-                Dtemp=jnp.round ( jnp.diag(Dtemp[:self.bond_dim]), 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp) 
-            else:
-                Atemp=jnp.round( Atemp[:,:Dtemp.shape[0]], 6)
-                Dtemp=jnp.round( jnp.diag(Dtemp), 6)
-                Vhtemp=jnp.round( Vhtemp[:Dtemp.shape[0],:], 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
-            
-            # Reshape based on the index.
-            if  index==0:
-                A=jnp.reshape(Atemp,[dim_i,-1])
-                A_plusone=jnp.reshape(Dtemp @ Vhtemp,[-1,dim_j])
-                mps[index]=A
-            else:
-                A=jnp.reshape(Atemp,[dim_i,dim_j,-1])
-                A_plusone=jnp.reshape(Dtemp @ Vhtemp,[-1,dim_k])
-                mps[index]=A
-            
-            # Contract the non-left canonical part to the next tensor
-            if index == self.position_l -1:
-                if index==self.length-2:
-                    mps[index+1]=jnp.einsum('ij, jkl ->ikl',A_plusone,mps[index+1])
-                else:
-                    mps[index+1]=jnp.einsum('ij, jklm ->iklm',A_plusone,mps[index+1])
-            else:
-                mps[index+1]=jnp.einsum('ij, jkl->ikl',A_plusone,mps[index+1])
+            A,Anext=jit_local_orthonamilize_left(mps[index],mps[index+1])
+            mps[index]=A
+            mps[index+1]=Anext
         
-        # Put the MPS into right canonical until position_l -1
+        mps[self.position_l-1], mps[self.position_l]=jit_local_orthonamilize_left(mps[self.position_l-1],mps[self.position_l])
+        
+        # Put the MPS into right canonical until position_l 
         for index in reversed(range(self.position_l+1,self.length)):
-            # Reshape matrix
-            if index==self.length-1:
-                dim_i=mps[index].shape[0]
-                dim_j=mps[index].shape[1]
-                B=mps[index]
-            else:  
-                dim_i=mps[index].shape[0]
-                dim_j=mps[index].shape[1]
-                dim_k=mps[index].shape[2]
-                B=jnp.reshape(mps[index],[-1,dim_j*dim_k])
             
-            #Perform svd in the matrix
-            Atemp,Dtemp,Vhtemp=jnp.linalg.svd(B)
-
-            # Perform truncation.
-            if Vhtemp.shape[0]>self.bond_dim:
-                Atemp=jnp.round( Atemp[:,:self.bond_dim], 6)
-                Vhtemp=Vhtemp[:self.bond_dim,:]
-                Vhtemp=jnp.round(Vhtemp, 6)
-                Dtemp=jnp.round( jnp.diag(Dtemp[:self.bond_dim]), 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
-            else:
-                Dtemp=jnp.round( jnp.diag(Dtemp), 6)
-                Atemp=jnp.round( Atemp[:,:Dtemp.shape[0]], 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
-                Vhtemp=jnp.round( Vhtemp[:Dtemp.shape[0],:], 6)
-                
-
-            # Perform reshape 
-            if index==self.length-1:
-                A=jnp.reshape(Vhtemp,[-1, dim_j])
-                A_minusone=jnp.reshape(Atemp @ Dtemp,[dim_i,-1])
-                mps[index]=A
-            else:
-                A=jnp.reshape(Vhtemp,[-1, dim_j, dim_k])
-                A_minusone=jnp.reshape(Atemp @ Dtemp,[dim_i,-1])
-                mps[index]=A
-            
-            # Contract the non-right canonical part to the previous tensor depending if the previous one is already the one with the l -lges
-            if index == self.position_l +1:
-                if index==1:
-                    mps[index-1]= jnp.einsum('ijl, jm->iml',mps[index-1],A_minusone)
-                else:
-                    mps[index-1]= jnp.einsum('ijkl, km->ijml',mps[index-1],A_minusone)
-            else:
-                mps[index-1]=jnp.einsum('ijk, kl->ijl',mps[index-1],A_minusone)
-        
+            A,Aprev=jit_local_orthonamilize_right(mps[index],mps[index-1])
+            mps[index]=A
+            mps[index-1]=Aprev
+         
         return mps
