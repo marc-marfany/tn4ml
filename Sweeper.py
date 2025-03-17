@@ -4,314 +4,272 @@ import jax
 import jax.numpy as jnp
 
 class sweeper:
-    def __init__(self, mps, phi,learning_rate,bond_dim, j,y, data) -> None:
+    def __init__(self, Bj, B_jadjacent, phi_j, phi_jadjacent, learning_rate, bond_dim, j, y, left_side, right_side) -> None:
         """
         Initialize the sweeping algorithm. Save parameters
 
         Args:
-            - mps (list[JAX.Numpy.Array: float], 
-                shape: List[(physical_leg,bond_dim), (bond_dim, physical_leg,bond_dim), ..., (bond_dim, physical_leg, bond_dim, l_leg), 
-                ..., (bond_dim, physical_leg, bond_dim),.., (bond_dim, physical_leg) ]): This variable is a list full of tensors of the MPS.
-            -  phi (JAX.numpy.Array : float, shape: (batch_size, image_size, physical_bond) ): Embedded image as the paper.
+            - Bj (JAX.Numpy.Array: float, shape : (bond_dim, physical_leg, bond_dim, l_leg)): Tensor will have 4 legs and it will be the one to update.
+            - B_jadjacent (JAX.Numpy.Array: float, shape :(bond_dim, physical_leg, bond_dim)): The adjacent tensor which will be updated and it will be added the l-leg
+            - phi_j (JAX.numpy.Array : float, shape: (batch_size, 1, physical_bond) ): Embedded training images pixel on the position of the l leg tensor.
+            - phi_jadjacent (JAX.numpy.Array : float, shape: (batch_size, 1, physical_bond) ): Embedded training images pixel on the position of the adjacent tensor of the l leg.
             - y (JAX.Numpy.Array: float, shape: (batch-size, #_labels_size): Labels training data.
             - learning_rate (float): Learning rate.
-            - bond_dim (int): Bond dimension between tensor in the MPS.
+            - bond_dim (int): Maximum bond dimension between tensors in the MPS.
             - j (int): Position j in the MPS where the l leg is situated.
-            - data (List[List[JAX.Numpy.Array: float]],  shape: [#_training,length_mps] (size_contracted_legs)) : It will contain the left or right legs, one dimensional arrays, 
-                to contract with the joint tensor to optimize.
+            - left_side (List[JAX.Numpy.Array: float],  shape: [#_training] (size_contracted_legs)) : It will contain the left data contracted to perform the update.
+            - right_side (List[JAX.Numpy.Array: float],  shape: [#_training] (size_contracted_legs)) : It will contain the right data contracted to perform the update.
             
         """
         
-        self.mps=mps 
-        self.phi=phi
+        self.Bj=Bj
+        self.B_jadjacent=B_jadjacent 
+        self.phi_j=phi_j
+        self.phi_jadjacent=phi_jadjacent
         self.learning_rate=learning_rate
         self.bond_dim=bond_dim
         self.j=j
         self.y=y
-        self.data=data
+        self.left_side=left_side
+        self.right_side=right_side
     
-
-    def contract_with_neighbour_tensor(self,left_or_right):
+    
+    def contract_with_neighbour_tensor_lr(self):
         """
-        This function will contract two adjacent tensor, (j,j+1) or (j-1,j) into a single tensor. It returns a single tensor 
+        This function will contract two adjacent tensor, (j, j+1) into a single tensor in the direction left to right sweep. It returns a single tensor 
         with two pysical bonds, the l leg in the last position, and the left and right bond (those depending on the position)
         
-        Args:
-            - left_or_right (bool): The direction that we are sweeping. If left we are sweeping from left to right (contraction of j, j+1 tensors). If right
-                we are sweeping from right to left (contraction of j-1, j tensors).
         Returns:
-            - joint_tensor (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j or j-1), physical_bond(j+1 or j ), bond_dim, l_leg)): 
-                Single tensor being 4/5 dimensional.
+            - joint_tensor (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), physical_bond(j+1), bond_dim, l_leg)): 
+                We are sweeping from left to right (contraction of j, j+1 tensors). Single tensor being 5 dimensional.
         """
         
-        j=self.j
+        joint_tensor=jnp.tensordot(self.Bj, self.B_jadjacent, axes=(2,0))
         
-        # If direction is left, contract adjacents j, j+1 tensors. Careful on the index j position
-        if left_or_right=='left':
-            if j==0:
-                Bj=self.mps[j]
-                Bj_plus_one=self.mps[j+1]
-                joint_tensor=jnp.einsum('ijl,jmn->imnl', Bj,Bj_plus_one)
-            elif j==(len(self.mps)-2):
-                Bj=self.mps[j]
-                Bj_plus_one=self.mps[j+1]
-                joint_tensor=jnp.einsum('ijkl,km->ijml', Bj,Bj_plus_one)
-            else:
-                Bj=self.mps[j]
-                Bj_plus_one=self.mps[j+1]
-                joint_tensor=jnp.einsum('ijkl,kmn->ijmnl', Bj,Bj_plus_one)
+        return jnp.transpose(joint_tensor,(0,1,3,4,2))
         
-        # If direction is right, contract adjacents j, j+1 tensors. Careful on the index j position
-        if left_or_right=='right':
-            if j==len(self.mps)-1:
-                Bj=self.mps[j]
-                Bj_minus_one=self.mps[j-1]
-                joint_tensor =jnp.einsum('ijk,klm->ijlm',Bj_minus_one,Bj)
-            elif j==1:
-                Bj=self.mps[j]
-                Bj_minus_one=self.mps[j-1]
-                joint_tensor =jnp.einsum('jk,klmn->jlmn',Bj_minus_one,Bj)
-            else:
-                Bj=self.mps[j]
-                Bj_minus_one=self.mps[j-1]
-                joint_tensor =jnp.einsum('ijk,klmn->ijlmn',Bj_minus_one,Bj)
+       
+    def contract_with_neighbour_tensor_rl(self):
+        """
+        This function will contract two adjacent tensor, (j-1, j) into a single tensor in the direction right to left sweep. It returns a single tensor 
+        with two pysical bonds, the l leg in the last position, and the left and right bond (those depending on the position)
+        
+        Returns:
+            - joint_tensor (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j-1), physical_bond(j), bond_dim, l_leg)): If right
+                We are sweeping from right to left (contraction of j-1, j tensors) .Single tensor being 5 dimensional.
+        """
+        
+        joint_tensor=jnp.tensordot(self.B_jadjacent, self.Bj, axes=(2,0))
         
         return joint_tensor
-     
-    
-    def contract_next_right_or_left(self,i,left_or_right):
+         
+       
+    def update_single_data_left(self,i):
         ''' 
-        Contract the right hand side (if left) or the left hand side (if right) of the specific index of the MPS AFTER being updated. This
+        Contract the left hand side of the specific index of the MPS AFTER being updated. This
         contraction will be with the adjacent data position (bond_dim) and the embedded image pixel (physical_bond).
         
         Args:
-            - left_or_right (bool): The direction that we are sweeping.
-            - i (int): Index image batch position to contract.
+            - i (int): Index pixel's image batch position to contract.
         Returns:
-            - temporary_data : Left or right new leg to contract with the joint tensor to optimize.
+            - left_side_i (JAX.numpy.Array : float, shape (bond_dim)): New left_side_data for the position .
         '''
     
-        j=self.j
+        left_side_i=jnp.tensordot(self.left_side[i], self.Bj, axes=(0,0))
+        left_side_i=jnp.tensordot(self.phi_j[i,:], left_side_i, axes=(0,0))
 
-        if left_or_right=='left':
-            if j== 0 :
-                temporary_data= jnp.einsum('ij, i-> j',self.mps[j],self.phi[i,j,:])
-                return  temporary_data/ jnp.linalg.norm( temporary_data)
-            else:
-                data_i_j_minusone=self.data[i][j-1] # index i is index training  and j index mps
-                temporary_data=jnp.einsum('i, ijk->jk',data_i_j_minusone, self.mps[j])
-                temporary_data=jnp.einsum('j, jk -> k',self.phi[i,j,:],temporary_data)
-                return temporary_data / jnp.linalg.norm( temporary_data )
-            
-        if left_or_right=='right':
-            if j== len(self.mps) -1 :
-                temporary_data=jnp.einsum('ij, j-> i',self.mps[j],self.phi[i,j,:])
-                return temporary_data/ jnp.linalg.norm( temporary_data )   
-            else:
-                data_i_j_plusone=self.data[i][j+1] # index i is index training  and j index mps
-                temporary_data=jnp.einsum('ijk,k->ij',self.mps[j],data_i_j_plusone) 
-                temporary_data =jnp.einsum('ij,j->i',temporary_data, self.phi[i,j,:])
-                return   temporary_data / jnp.linalg.norm( temporary_data)
-        
+        return left_side_i / jnp.linalg.norm( left_side_i )
     
-    def update_data(self,left_or_right):
+    
+    def update_single_data_right(self, i):
         ''' 
-        This function will update the data List[List[]] with the previous tensor optimized of the MPS for all images.
-
+        Contract the right hand side of the specific index of the MPS AFTER being updated. This
+        contraction will be with the adjacent data position (bond_dim) and the embedded image pixel (physical_bond).
+        
         Args:
-            - left_or_right (bool): The direction that we are sweeping.
-        Returns:
-            Empty.
-        '''
-
-        # Left to right 
-        if left_or_right=='left':
-            for index_training in range(self.phi.shape[0]):
-                self.data[index_training][self.j]=self.contract_next_right_or_left(i=index_training,left_or_right=left_or_right)
+            - i (int): Index pixel's image batch position to contract.
         
-        # Right to left
-        if left_or_right=='right':
-            for index_training in range(self.phi.shape[0]):
-                self.data[index_training][self.j]=self.contract_next_right_or_left(i=index_training, left_or_right=left_or_right)
-
+        Returns:
+            - right_side_i (JAX.numpy.Array : float, shape (bond_dim)): New right_side_data for the position .
+        '''
     
-    def create_f_l(self,i,left_or_right, joint_tensor):
+        right_side_i=jnp.tensordot(self.Bj, self.right_side[i], axes=(2,0))
+        right_side_i=jnp.tensordot(right_side_i, self.phi_j[i,:], axes=(1,0))
+
+        return right_side_i / jnp.linalg.norm( right_side_i )
+             
+    
+    def create_f_l_lr(self, left_side_i, right_side_i, joint_tensor, phi_j_i, phi_j_plusone_i):
         ''' 
-        This function creates the prediction label f_l(x). It puts  put together the previous computed parts (data and joint_tensor). 
+        This function creates the prediction label f_l(x) of one image in the direction left right of the sweep. It puts  put together the previous computed parts (joint_tensor, left_side_i, right_side_i, phi_j_i, and phi_j_plusone_i). 
         This is done by contracting the joint_tensor with the left, right legs of data and the embedded pixels.
         
         Args:
-            - left_or_right (bool): The direction that we are sweeping.  
-            - i (int): Index image batch position to contract.
-            - joint_tensor (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j or j-1), physical_bond(j+1 or j ), bond_dim, l_leg)): 
-                Single tensor being 4/5 dimensional.
+            - left_side_i (JAX.numpy.Array : float, shape: (bond_dim)) : left_side of one image to contract with the leftest leg of the joint tensor.
+            - right_side_i (JAX.numpy.Array : float, shape: (bond_dim)) : right_side of one image to contract with the second rightest leg of the joint tensor.
+            - phi_j_i(JAX.numpy.Array : float, shape: (physical_bond (j) ) ) ):  Embedded image pixel on the position of the l leg tensor.
+            - phi_j_plusone_i(JAX.numpy.Array : float, shape: (physical_bond (j) ) ) ):  Embedded image pixel on the position of the l+1 leg tensor.
+            - joint_tensor (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), physical_bond(j+1), bond_dim, l_leg)): 
+                Single tensor being 5 dimensional.
         Returns
             - f_l (JAX.numpy.Array : float, shape : (l_leg)): Predicted label.
         ''' 
 
-        j=self.j
-
-        # If left perform the contraction with all elements to compute the predicted level
-        if left_or_right=='left':
-            # If we are in the beggining of the mps, we have no left leg to contract with
-            if j==0:
-                Bj_j_plusone=joint_tensor
-                right_side=self.data[i][j+2]
-                phi_j=self.phi[i,j,:]
-                phi_j_plusone=self.phi[i,j+1,:]
-                f_l=jnp.einsum('k,klmn->lmn',phi_j, Bj_j_plusone)
-                f_l=jnp.einsum('l,lmn->mn',phi_j_plusone, f_l)
-                f_l=jnp.einsum('mn,m->n',f_l, right_side)
-            # If we are in the end of the mps, we have no right leg to contract with . 
-            elif j==len(self.mps)-2:
-                Bj_j_plusone=joint_tensor
-                left_side=self.data[i][j-1]
-                phi_j=self.phi[i,j,:]
-                phi_j_plusone=self.phi[i,j+1,:]
-                f_l=jnp.einsum('j,jklm->klm',left_side, Bj_j_plusone)
-                f_l=jnp.einsum('k,klm->lm',phi_j , f_l)
-                f_l=jnp.einsum('l,lm->m',phi_j_plusone , f_l)
-            else:
-                Bj_j_plusone=joint_tensor
-                left_side,right_side=self.data[i][j-1],self.data[i][j+2]
-                phi_j=self.phi[i,j,:]
-                phi_j_plusone=self.phi[i,j+1,:]
-                f_l=jnp.einsum('j,jklmn->klmn',left_side, Bj_j_plusone)
-                f_l=jnp.einsum('k,klmn->lmn',phi_j , f_l)
-                f_l=jnp.einsum('l,lmn->mn',phi_j_plusone , f_l)
-                f_l=jnp.einsum('mn,m->n',f_l , right_side)
+        f_l=jnp.tensordot(left_side_i, joint_tensor, axes=(0,0))
+        f_l=jnp.tensordot(phi_j_i, f_l, axes=(0,0))
+        f_l=jnp.tensordot(phi_j_plusone_i, f_l, axes=(0,0))
+        f_l=jnp.tensordot(f_l, right_side_i, axes=(0,0))
         
-        # Same with right side mimicking the conditions given the index position in the MPS being contracted  
-        if left_or_right== 'right':
-            if j==len(self.mps)-1:
-                Bjminusone_j=joint_tensor
-                left_side=self.data[i][j-2]
-                phi_j=self.phi[i,j,:]
-                phi_j_minusone=self.phi[i,j-1,:]
-                f_l=jnp.einsum('j,jklm->klm',left_side, Bjminusone_j)
-                f_l=jnp.einsum('k,klm->lm',phi_j_minusone , f_l)
-                f_l=jnp.einsum('l,lm->m',phi_j , f_l)
-            elif j==1:
-                Bjminusone_j=joint_tensor
-                right_side=self.data[i][j+1]
-                phi_j=self.phi[i,j,:]
-                phi_j_minusone=self.phi[i,j-1,:]
-                f_l=jnp.einsum('k,klmn->lmn',phi_j_minusone , Bjminusone_j)
-                f_l=jnp.einsum('l,lmn->mn',phi_j , f_l)
-                f_l=jnp.einsum('mn,m->n',f_l , right_side)  
-            else:
-                Bjminusone_j=joint_tensor
-                left_side,right_side=self.data[i][j-2],self.data[i][j+1]
-                phi_j=self.phi[i,j,:]
-                phi_j_minusone=self.phi[i,j-1,:]
-                f_l=jnp.einsum('j,jklmn->klmn',left_side, Bjminusone_j)
-                f_l=jnp.einsum('k,klmn->lmn',phi_j_minusone , f_l)
-                f_l=jnp.einsum('l,lmn->mn',phi_j , f_l)
-                f_l=jnp.einsum('mn,m->n',f_l , right_side)     
+        return f_l
+    
+
+    def create_f_l_rl(self, left_side_i, right_side_i, joint_tensor, phi_j_i, phi_j_minusone_i):
+        ''' 
+        This function creates the prediction label f_l(x) of one image in the direction right to left of the sweep. It puts  put together the previous computed parts (joint_tensor, left_side_i, right_side_i, phi_j_i, and phi_j_plusone_i). 
+        This is done by contracting the joint_tensor with the left, right legs of data and the embedded pixels.
+        
+        Args:
+            - left_side_i (JAX.numpy.Array : float, shape: (bond_dim)) : left_side of one image to contract with the leftest leg of the joint tensor.
+            - right_side_i (JAX.numpy.Array : float, shape: (bond_dim)) : right_side of one image to contract with the second rightest leg of the joint tensor.
+            - phi_j_i(JAX.numpy.Array : float, shape: (physical_bond (j) ) ) ):  Embedded image pixel on the position of the l leg tensor.
+            - phi_j_minusone_i(JAX.numpy.Array : float, shape: (physical_bond (j) ) ) ):  Embedded image pixel on the position of the l-1 leg tensor.
+            - joint_tensor (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j-1), physical_bond(j), bond_dim, l_leg)): 
+                Single tensor being 5 dimensional.
+        Returns
+            - f_l (JAX.numpy.Array : float, shape : (l_leg)): Predicted label.
+        ''' 
+        
+        f_l=jnp.tensordot(left_side_i, joint_tensor, axes=(0,0))
+        f_l=jnp.tensordot(phi_j_minusone_i, f_l, axes=(0,0))
+        f_l=jnp.tensordot(phi_j_i, f_l, axes=(0,0))
+        f_l=jnp.tensordot(f_l, right_side_i, axes=(0,0))
         
         return f_l
     
     
-    def max_magnitude_label(self,f_l):
+    def max_magnitude_label(self, f_l):
         ''' 
         This function will perform one hot encoding on the predicted level. It will take the maximum argument of the predicted level as the 
         predicted one hot encoded level position.
         Args:
             - f_l (JAX.numpy.Array : float, shape : (l_leg)): Predicted label.
-        Return : 
+        
+        Returns : 
             - f_l (JAX.numpy.Array : float, shape : (l_leg)): Predicted one hot position encoded label.
         '''
 
-        predicted_level=np.zeros(f_l.shape)
-        predicted_level[np.argmax(f_l)]=1
-        return jnp.array(predicted_level,dtype=float)
+        
+        max_f_l=jnp.max(f_l)
+        probs=jnp.exp(f_l-max_f_l)/jnp.sum(jnp.exp(f_l-max_f_l))
+        max_index = jnp.argmax(probs)
+        predicted_level=jnp.zeros_like(probs).at[max_index].set(1.0)
+        
+        return predicted_level
     
     
-    def compute_cost_and_gradient_B_l(self,left_or_right):
+    def compute_cost_and_gradient_B_l_lr(self):
         ''' 
         This function computes the gradient and the cost of the joint tensor side that we are optimising following the reference of the paper.
 
         Args:
-            - left_or_right (bool): The direction that we are sweeping.
+            - Empty
+        
         Returns:
             - cost (JAX.numpy.Array : float, shape : (1)) : Cost or loss of the 0.5*(predicted labels - true_labels)^2 for the images batch.
             - grad ( JAX.numpy.Array : float, shape : single array size (bond_dim^2*physical_bond^2*l_leg))
-            - accuracy (float): Accuracy between 0 and 1.
+            - accuracy (float): Accuracy between 0 and 100.
         '''
+        def compute_cost(f_l,label_index_training):
+            diff=f_l-label_index_training
+            return 0.5* jnp.dot(diff, diff), diff
         
-        j=self.j
+        def compute_accuracy(f_l,label_index_training):
+            predicted_level=jit_max_magnitude_label(f_l)
+            return jnp.all(predicted_level == label_index_training) # Add to the accuracy
         
-        if left_or_right=='left':
-            cost=0
-            grad=0
-            accuracy=0
-            joint_tensor=self.contract_with_neighbour_tensor(left_or_right=left_or_right)
+        def compute_grad_tensor(left_side_i,phi_j_i,phi_j_adjacent_i,right_side_i, diff):
+            # Compute the gradient of the joint tensor following the procedure of the paper
+            return jnp.kron( jnp.kron( jnp.kron( jnp.kron(left_side_i, phi_j_i), phi_j_adjacent_i),right_side_i), -diff)
+
+        cost=0
+        grad=0
+        accuracy=0
+
+        # jit funtions that are being called in 
+        jit_create_f_l_lr=jax.jit(self.create_f_l_lr)
+        jit_max_magnitude_label=jax.jit(self.max_magnitude_label)
+        jit_compute_cost=jax.jit(compute_cost)
+        jit_compute_accuracy=jax.jit(compute_accuracy)
+        jit_compute_grad_tensor=jax.jit(compute_grad_tensor)
+
+        
+        joint_tensor=self.contract_with_neighbour_tensor_lr() # already jit
+        num_training=(self.y).shape[0]
+
+        for index_training in range(num_training):
             
-            for index_training in range((self.y).shape[0]):
-                # Compute the cost and accuracy
-                fl_index_training=self.create_f_l(i=index_training,left_or_right=left_or_right,joint_tensor=joint_tensor) # created the predicted label by using the previous function
-                label_index_training=self.y[index_training,:] # true label
-                diff=jnp.round(fl_index_training-label_index_training,6) 
-                cost+= 0.5* jnp.dot(diff, diff) # Add to the cost
-                accuracy+= int(all(self.max_magnitude_label(fl_index_training) == label_index_training)) # Add to the accuracy
-                # Compute the gradient of the joint tensor following the procedure of the paper
-                if j==0:
-                    right_side=self.data[index_training][j+2]
-                    phi_j=self.phi[index_training,j,:]
-                    phi_j_plusone=self.phi[index_training,j+1,:]
-                    #grad_index_training=jnp.kron(phi_j ,jnp.kron(phi_j_plusone,jnp.kron( right_side,diff) ))
-                    grad_index_training=jnp.kron( jnp.kron( jnp.kron(phi_j, phi_j_plusone),right_side), -diff) 
-                elif j== len(self.mps)-2:
-                    left_side=self.data[index_training][j-1]
-                    phi_j=self.phi[index_training,j,:]
-                    phi_j_plusone=self.phi[index_training,j+1,:]
-                    #grad_index_training=jnp.kron(left_side, jnp.kron(phi_j ,jnp.kron(phi_j_plusone,diff) ))
-                    grad_index_training=jnp.kron( jnp.kron( jnp.kron(left_side, phi_j), phi_j_plusone), -diff) 
-                else:
-                    left_side,right_side=self.data[index_training][j-1],self.data[index_training][j+2]
-                    phi_j=self.phi[index_training,j,:]
-                    phi_j_plusone=self.phi[index_training,j+1,:]
-                    # grad_index_training=jnp.kron(left_side, jnp.kron(phi_j ,jnp.kron(phi_j_plusone , jnp.kron(right_side ,diff) )  ) )
-                    grad_index_training=jnp.kron( jnp.kron( jnp.kron( jnp.kron(left_side, phi_j), phi_j_plusone),right_side), -diff)  
-                
-                grad+=grad_index_training
-
-        if left_or_right=='right':
-            cost=0
-            grad=0
-            accuracy=0
-            joint_tensor=self.contract_with_neighbour_tensor(left_or_right=left_or_right)
-
-            for index_training in range((self.y).shape[0]):
-                fl_index_training=self.create_f_l(i=index_training,left_or_right=left_or_right,joint_tensor=joint_tensor) # created the predicted label by using the previous function
-                label_index_training=self.y[index_training,:] # true label
-                diff=jnp.round(fl_index_training-label_index_training,6)
-                cost+= 0.5* jnp.dot(diff, diff) # Add to the cost
-                accuracy+= int(all((self.max_magnitude_label(fl_index_training) == label_index_training))) # Add to the accuracy
-                # Compute the gradient of the joint tensor following the procedure of the paper
-                if j==1:
-                    right_side=self.data[index_training][j+1]
-                    phi_j=self.phi[index_training,j,:]
-                    phi_j_minusone=self.phi[index_training,j-1,:]
-                    #grad_index_training=jnp.kron(phi_j_minusone ,jnp.kron(phi_j,jnp.kron( right_side,-diff) ))
-                    grad_index_training= jnp.kron( jnp.kron( jnp.kron(phi_j_minusone, phi_j),right_side), -diff) 
-                elif j== len(self.mps)-1:
-                    left_side=self.data[index_training][j-2]
-                    phi_j=self.phi[index_training,j,:]
-                    phi_j_minusone=self.phi[index_training,j-1,:]
-                    #grad_index_training=jnp.kron(left_side, jnp.kron(phi_j_minusone ,jnp.kron(phi_j,-diff) ))
-                    grad_index_training= jnp.kron( jnp.kron( jnp.kron(left_side, phi_j_minusone), phi_j), -diff)
-                else:
-                    left_side,right_side=self.data[index_training][j-2],self.data[index_training][j+1]
-                    phi_j=self.phi[index_training,j,:]
-                    phi_j_minusone=self.phi[index_training,j-1,:]
-                    #grad_index_training=jnp.kron(left_side, jnp.kron(phi_j_minusone ,jnp.kron(phi_j , jnp.kron(right_side ,-diff) )  ) )
-                    grad_index_training=jnp.kron( jnp.kron( jnp.kron( jnp.kron(left_side, phi_j_minusone), phi_j),right_side), -diff) 
-                
-                grad+=grad_index_training
+            label_index_training=self.y[index_training,:]
+            f_l=jit_create_f_l_lr(joint_tensor=joint_tensor, left_side_i=self.left_side[index_training], right_side_i=self.right_side[index_training], phi_j_i=self.phi_j[index_training,:], phi_j_plusone_i=self.phi_jadjacent[index_training,:])
+            cost_i,diff= jit_compute_cost(f_l=f_l, label_index_training=label_index_training)
+            cost+=cost_i
+            accuracy+= jit_compute_accuracy(f_l, label_index_training=label_index_training)
+            grad+=jit_compute_grad_tensor(left_side_i=self.left_side[index_training], phi_j_adjacent_i=self.phi_jadjacent[index_training,:], phi_j_i=self.phi_j[index_training,:], right_side_i=self.right_side[index_training], diff=diff)
+            
         
-        return cost,grad, (accuracy / (self.y).shape[0])
+        return cost, grad,( (accuracy / num_training)*100)
     
+    
+    def compute_cost_and_gradient_B_l_rl(self):
+        ''' 
+        This function computes the gradient and the cost of the joint tensor side that we are optimising following the reference of the paper.
+
+        Args:
+        
+        Returns:
+            - cost (JAX.numpy.Array : float, shape : (1)) : Cost or loss of the 0.5*(predicted labels - true_labels)^2 for the images batch.
+            - grad ( JAX.numpy.Array : float, shape : single array size (bond_dim^2*physical_bond^2*l_leg))
+            - accuracy (float): Accuracy between 0 and 100.
+        '''
+        def compute_cost(f_l,label_index_training):
+            diff=f_l-label_index_training
+            return 0.5* jnp.dot(diff, diff), diff
+        
+        def compute_accuracy(f_l,label_index_training):
+            predicted_level=jit_max_magnitude_label(f_l)
+            return jnp.all(predicted_level == label_index_training) # Add to the accuracy
+        
+        def compute_grad_tensor(left_side_i,phi_j_adjacent_i,phi_j_i,right_side_i, diff):
+            # Compute the gradient of the joint tensor following the procedure of the paper
+            return jnp.kron( jnp.kron( jnp.kron( jnp.kron(left_side_i, phi_j_adjacent_i), phi_j_i),right_side_i), -diff)
+
+        
+        cost=0
+        grad=0
+        accuracy=0
+
+        # jit funtions that are being called in
+        jit_create_f_l_rl=jax.jit(self.create_f_l_rl)
+        jit_max_magnitude_label=jax.jit(self.max_magnitude_label)
+        jit_compute_cost=jax.jit(compute_cost)
+        jit_compute_accuracy=jax.jit(compute_accuracy)
+        jit_compute_grad_tensor=jax.jit(compute_grad_tensor)
+
+        joint_tensor=self.contract_with_neighbour_tensor_rl() # already jit
+        num_training=(self.y).shape[0]
+
+        for index_training in range(num_training):
+            
+            label_index_training=self.y[index_training,:]
+            f_l=jit_create_f_l_rl(joint_tensor=joint_tensor, left_side_i=self.left_side[index_training], right_side_i=self.right_side[index_training], phi_j_i=self.phi_j[index_training,:], phi_j_minusone_i=self.phi_jadjacent[index_training,:])
+            cost_i,diff= jit_compute_cost(f_l=f_l, label_index_training=label_index_training)
+            cost+=cost_i
+            accuracy+= jit_compute_accuracy(f_l, label_index_training=label_index_training)
+            
+            # Compute the gradient of the joint tensor following the procedure of the paper
+            
+            grad+=jit_compute_grad_tensor(left_side_i=self.left_side[index_training], phi_j_adjacent_i=self.phi_jadjacent[index_training,:], phi_j_i=self.phi_j[index_training,:], right_side_i=self.right_side[index_training], diff=diff)
+        
+        return cost, grad,  ( (accuracy / num_training)*100)
     
     def gradient_descent_step(self, B_l, gradient_B_l):
         '''
@@ -319,160 +277,110 @@ class sweeper:
 
         Args:
             - B_l (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j or j-1), physical_bond(j+1 or j ), bond_dim, l_leg)): 
-                Single tensor being 4/5 dimensional.
+                Single tensor being 5 dimensional.
             - gradient_B_l ( JAX.numpy.Array : float, shape : single array size (bond_dim^2*physical_bond^2*l_leg)): gradient of the B_l tensor
+        
         Returns:
             - (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j or j-1), physical_bond(j+1 or j ), bond_dim, l_leg)): 
-                Single tensor being 4/5 dimensional which has ben applied the gradient descent step.
+                Single tensor being 5 dimensional which has ben applied the gradient descent step.
         '''
         
         return (B_l + self.learning_rate*jnp.reshape(gradient_B_l,B_l.shape)) # The gradient has to be reshaped as the same as in the B_l tensor
 
     
-    def separate_B_l(self,left_or_right,updated_B_l):
+    def separate_B_l_lr(self, updated_B_l):
         ''' 
         This function will perform the SVD on the optimized tensor, ( so previously the joint tensor has been applied a gradient descent step).
         In this updated tensor will be performed the SVD decomposition, controlling the bond dimension size. During the process the eigenvalues
         will be normalised to better stability.
+        
         Args:
-            - left_or_right (bool): The direction that we are sweeping.
-            - updated_B_l (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j or j-1), physical_bond(j+1 or j ), bond_dim, l_leg)): 
-                Single tensor being 4/5 dimensional which has ben applied the gradient descent step.
+            - updated_B_l (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), physical_bond(j+1), bond_dim, l_leg)): 
+                Single tensor being 5 dimensional which has ben applied the gradient descent step.
+        
         Returns: 
-            - if left
-                - A_j (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), bond_dim)) : Left isometry updated tensor on the position j.
-                    If we are in the beggining of the MPS the first bond_dim disappers.
-                - A_j_plusone (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j+1), bond_dim,l_leg)):  Tensor on the j +1 side with now the l_leg.
-            - if right
-                - A_j_minusone (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j-1), bond_dim, l_leg)):  Tensor on the j -1 side with now the l_leg.
-                - A_j (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), bond_dim)) : Right isometry updated tensor on the position j.
-                    If we are in the end of the MPS the last bond_dim disappers
+            - A_j (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), bond_dim)) : Left isometry updated tensor on the position j.
+            - A_j_plusone (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j+1), bond_dim, l_leg)):  Tensor on the j +1 side with now the l_leg.  
         ''' 
-
-        # Case left side
-        if left_or_right=='left':
-            # Keep track of the shape of the updated B_l to reorder the and reshape the matrices after SVD
-            original_shape=updated_B_l.shape
-            if len(original_shape) == 5:
-                dim_i=original_shape[0]
-                dim_j=original_shape[1]
-                dim_k=original_shape[2]
-                dim_l=original_shape[3]
-                dim_m=original_shape[4]
-            elif len( original_shape) == 4:
-                dim_i=original_shape[0]
-                dim_j=original_shape[1]
-                dim_k=original_shape[2]
-                dim_l=original_shape[3]
-            else: 
-                print('Something happened dimension updated B, does not make sense')
-            # Reshape tensor into a matrix to apply svd according as in the paper
-            if len(original_shape)==4:
-                if self.j==0:
-                    updated_B_l=jnp.reshape(updated_B_l,[dim_i,-1])
-                else:
-                    updated_B_l=jnp.reshape(updated_B_l,[dim_i*dim_j,-1])
-            
-            elif len(original_shape)==5:
-                updated_B_l=jnp.reshape(updated_B_l,[dim_i*dim_j,-1])
-            
-            # Apply SVD
-            Atemp,Dtemp,Vhtemp=jnp.linalg.svd(updated_B_l)
-            
-            # Normalise the eigenvalues and truncate the matrices if bigger than bond_dim
-            if Atemp.shape[1]>self.bond_dim:
-                Atemp=(Atemp)[:,:self.bond_dim]
-                Atemp=jnp.round(Atemp, 6)
-                Vhtemp=jnp.round(Vhtemp[:self.bond_dim,:], 6)
-                Dtemp=jnp.round ( jnp.diag(Dtemp[:self.bond_dim]), 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp) 
-            else:
-                Atemp=jnp.round( (Atemp.T)[:,:Dtemp.shape[0]], 6)
-                Dtemp=jnp.round( jnp.diag(Dtemp), 6)
-                Vhtemp=jnp.round( Vhtemp[:Dtemp.shape[0],:], 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
-
-            # Reshape the SVD matrices to be the new tensors in the position j and j+1
-            if len( original_shape) == 4:
-                if self.j==0:
-                    A_j=jnp.reshape(Atemp,[dim_i,-1])
-                    A_j_plusone=jnp.reshape(Dtemp @ Vhtemp,[-1,dim_j,dim_k,dim_l])
-                else:
-                    A_j=jnp.reshape(Atemp,[dim_i,dim_j,-1])
-                    A_j_plusone=jnp.reshape(Dtemp @ Vhtemp,[-1,dim_k,dim_l])
-                
-            elif len(original_shape) == 5:
-                A_j=jnp.reshape(Atemp,[dim_i,dim_j,-1])
-                A_j_plusone=jnp.reshape(Dtemp @ Vhtemp,[-1,dim_k,dim_l,dim_m])
-            else : 
-                print('Error while doing the svd, wrong dimension fit')
-            
-            return A_j, A_j_plusone
         
-        if left_or_right=='right':
-            # Keep track of the shape of the updated B_l to reorder the and reshape the matrices after SVD
-            original_shape=updated_B_l.shape
-            if len(original_shape) == 5:
-                dim_i=original_shape[0]
-                dim_j=original_shape[1]
-                dim_k=original_shape[2]
-                dim_l=original_shape[3]
-                dim_m=original_shape[4]
-            elif len( original_shape) == 4:
-                dim_i=original_shape[0]
-                dim_j=original_shape[1]
-                dim_k=original_shape[2]
-                dim_l=original_shape[3]
-            else: 
-                print('Something happened dimension updated B, does not make sense')
+        original_shape=updated_B_l.shape
+        dim_i=original_shape[0]
+        dim_j=original_shape[1]
+        dim_k=original_shape[2]
+        dim_l=original_shape[3]
+        dim_m=original_shape[4]
 
-            # Reshape tensor into a matrix to apply svd according as in the paper
-            if len( original_shape) == 5:
-                updated_B_l=jnp.reshape(jnp.permute_dims(updated_B_l,[0,1,4,2,3]),[dim_i*dim_j*dim_m,-1])
-            elif len( original_shape) == 4:
-                if self.j==len(self.mps)-1:
-                    updated_B_l=jnp.reshape(jnp.permute_dims(updated_B_l,[0,1,3,2]),[dim_i*dim_j*dim_l,-1])
-                else :
-                    updated_B_l=jnp.reshape(jnp.permute_dims(updated_B_l,[0,3,1,2]),[dim_i*dim_l,-1])
-            else: 
-                print('Something happened dimension updated B, does not make sense')
-
-            # Apply SVD
-            Atemp,Dtemp,Vhtemp=jnp.linalg.svd(updated_B_l)
-           
-            # Normalise the eigenvalues and truncate the matrices if bigger than bond_dim
-            if Vhtemp.shape[0]>self.bond_dim:
-                Atemp=jnp.round( Atemp[:,:self.bond_dim], 6)
-                Vhtemp=(Vhtemp)[:self.bond_dim,:]
-                Vhtemp=jnp.round(Vhtemp, 6)
-                Dtemp=jnp.round( jnp.diag(Dtemp[:self.bond_dim]), 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
-            
-            else:
-                Atemp=jnp.round( Atemp[:,:Dtemp.shape[0]], 6)
-                Dtemp=jnp.round( jnp.diag(Dtemp), 6)
-                Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
-                Vhtemp=jnp.round( Vhtemp[:Dtemp.shape[0],:], 6)
-            
-            # Reshape and permute the SVD matrices to be the new tensors in the position j-1 and j
-            if len( original_shape) == 4:
-                if self.j==len(self.mps)-1:
-                    A_j=jnp.reshape(Vhtemp,[-1, dim_k])
-                    A_j_minusone=jnp.reshape(Atemp @ Dtemp ,[dim_i,dim_j,dim_l, -1])
-                    A_j_minusone=jnp.permute_dims(A_j_minusone,[0,1,3,2])
-                else:
-                    A_j=jnp.reshape(Vhtemp,[-1, dim_j, dim_k])
-                    A_j_minusone=jnp.reshape(Atemp @ Dtemp ,[dim_i,dim_l,-1])
-                    A_j_minusone=jnp.permute_dims(A_j_minusone,[0,2,1])
-            elif len( original_shape) == 5:
-                A_j=jnp.reshape(Vhtemp,[-1,dim_k,dim_l])
-                A_j_minusone=jnp.reshape(Atemp @ Dtemp ,[dim_i,dim_j,dim_m,-1])
-                A_j_minusone=jnp.permute_dims(A_j_minusone,[0,1,3,2])
-            else : 
-                print('Error while doing the svd, wrong dimension fit')    
-            
-            return  A_j_minusone, A_j
+        updated_B_l=jnp.reshape(updated_B_l,[dim_i*dim_j,-1])
         
+        # Apply SVD
+        Atemp,Dtemp,Vhtemp=jnp.linalg.svd(updated_B_l)
+            
+        # Normalise the eigenvalues and truncate the matrices if bigger than bond_dim
+        if Atemp.shape[1]>self.bond_dim:
+            Atemp=(Atemp)[:,:self.bond_dim]
+            Atemp=jnp.round(Atemp, 8)
+            Vhtemp=jnp.round(Vhtemp[:self.bond_dim,:], 8)
+            Dtemp=jnp.round ( jnp.diag(Dtemp[:self.bond_dim]), 8)
+            Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp) 
+        else:
+            Atemp=jnp.round( (Atemp.T)[:,:Dtemp.shape[0]], 8)
+            Dtemp=jnp.round( jnp.diag(Dtemp), 8)
+            Vhtemp=jnp.round( Vhtemp[:Dtemp.shape[0],:], 8)
+            Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
+        
+        A_j=jnp.reshape(Atemp,[dim_i,dim_j,-1])
+        A_j_plusone=jnp.reshape(Dtemp @ Vhtemp,[-1,dim_k,dim_l,dim_m])
+
+        return A_j, A_j_plusone
+
+    
+    def separate_B_l_rl(self, updated_B_l):
+        ''' 
+        This function will perform the SVD on the optimized tensor, ( so previously the joint tensor has been applied a gradient descent step).
+        In this updated tensor will be performed the SVD decomposition, controlling the bond dimension size. During the process the eigenvalues
+        will be normalised to better stability.
+        
+        Args:
+            - updated_B_l (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j-1), physical_bond(j), bond_dim, l_leg)): 
+                Single tensor being 5 dimensional which has ben applied the gradient descent step.
+        
+        Returns: 
+            - A_j_minusone (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j-1), bond_dim, l_leg)):  Tensor on the j -1 side with now the l_leg.
+            - A_j (JAX.numpy.Array : float, shape : (bond_dim, physical_bond(j), bond_dim)) : Right isometry updated tensor on the position j.
+        '''
+
+        original_shape=updated_B_l.shape
+        dim_i=original_shape[0]
+        dim_j=original_shape[1]
+        dim_k=original_shape[2]
+        dim_l=original_shape[3]
+        dim_m=original_shape[4]
+
+        updated_B_l=jnp.reshape(jnp.permute_dims(updated_B_l,[0,1,4,2,3]),[dim_i*dim_j*dim_m,-1])
+
+        # Apply SVD
+        Atemp,Dtemp,Vhtemp=jnp.linalg.svd(updated_B_l)
+        
+        # Normalise the eigenvalues and truncate the matrices if bigger than bond_dim
+        if Vhtemp.shape[0]>self.bond_dim:
+            Atemp=jnp.round( Atemp[:,:self.bond_dim], 8)
+            Vhtemp=(Vhtemp)[:self.bond_dim,:]
+            Vhtemp=jnp.round(Vhtemp, 8)
+            Dtemp=jnp.round( jnp.diag(Dtemp[:self.bond_dim]), 8)
+            Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
+        
+        else:
+            Atemp=jnp.round( Atemp[:,:Dtemp.shape[0]], 8)
+            Dtemp=jnp.round( jnp.diag(Dtemp), 8)
+            Dtemp=Dtemp / jnp.trace(Dtemp.T @ Dtemp)
+            Vhtemp=jnp.round( Vhtemp[:Dtemp.shape[0],:], 8)
+        
+        A_j=jnp.reshape(Vhtemp,[-1,dim_k,dim_l])
+        A_j_minusone=jnp.reshape(Atemp @ Dtemp ,[dim_i,dim_j,dim_m,-1])
+        A_j_minusone=jnp.permute_dims(A_j_minusone,[0,1,3,2])
+
+        return  A_j_minusone, A_j    
+
     
     def update_mps(self,left_or_right):
         ''' 
@@ -480,35 +388,41 @@ class sweeper:
         
         Args:
             - left_or_right (bool): The direction that we are sweeping.
+        
         Returns:
-            - mps (list[JAX.Numpy.Array: float], 
-                shape: List[(physical_leg,bond_dim), (bond_dim, physical_leg,bond_dim), ..., (bond_dim, physical_leg, bond_dim, l_leg), 
-                ..., (bond_dim, physical_leg, bond_dim),.., (bond_dim, physical_leg) ]): This variable is a list full of tensors of the MPS.
-            - data (List[List[JAX.Numpy.Array: float]],  shape: [#_training,length_mps] (size_contracted_legs)) : It will contain the left or right legs, one dimensional arrays, 
-                to contract with the joint tensor to optimize.
+            - A_j (JAX.Numpy.Array: float, shape : (bond_dim, physical_leg, bond_dim)): Updated tensor will have 3 legs and it will fulfill the left or right isometry.
+            - B_jadjacent (JAX.Numpy.Array: float, shape :(bond_dim, physical_leg, bond_dim, l_leg)): The adjacent tensor updated which has four legs.
             - cost (JAX.numpy.Array : float, shape : (1)) : Cost or loss of the 0.5*(predicted labels - true_labels)^2 for the images batch.
             - accuracy (float): Accuracy between 0 and 1.
         '''
         
-        j=self.j
-        
+        new_side=[]
+
         if left_or_right=='left':
-            B_j_jplusone=self.contract_with_neighbour_tensor(left_or_right=left_or_right) # Compute the joint tensor on the j, j+1 sides
-            cost, grad, accuracy = self.compute_cost_and_gradient_B_l(left_or_right=left_or_right) # Compute the gradient, cost and accuracy being centered in the previous joint tensor
-            new_B_j_jplusone=self.gradient_descent_step( B_l=B_j_jplusone, gradient_B_l=grad) # Compute update joint tensor
-            A_j,A_j_plusone=self.separate_B_l(left_or_right=left_or_right, updated_B_l=new_B_j_jplusone) # Returns new j, j+1 tensors
-            self.mps[j]=A_j
-            self.mps[j+1]=A_j_plusone
-            self.update_data(left_or_right=left_or_right) # Computes update of the data with the previous optimized MPS in the sides j,j+1
+            B_j_jplusone=self.contract_with_neighbour_tensor_lr() # Compute the joint tensor on the j, j+1 sides
+            cost, grad, accuracy = self.compute_cost_and_gradient_B_l_lr() # Compute the gradient, cost and accuracy being centered in the previous joint tensor
+            new_B_j_jplusone=self.gradient_descent_step(B_l=B_j_jplusone, gradient_B_l=grad) # Compute update joint tensor
+            A_j,A_j_adjacent=self.separate_B_l_lr(updated_B_l=new_B_j_jplusone) # Returns new j, j+1 tensors
+            self.Bj=A_j
+            self.B_jadjacent=A_j_adjacent
+            
+            for index_training in range((self.y).shape[0]):
+                new_side.append(self.update_single_data_left(i=index_training)) # Computes update of the data with the previous optimized MPS in the sides j,j+1
+            
         
         if left_or_right=='right':
-            B_jminusone_j=self.contract_with_neighbour_tensor(left_or_right=left_or_right) # Compute the joint tensor on the j-1, j sides
-            cost, grad, accuracy = self.compute_cost_and_gradient_B_l(left_or_right=left_or_right) # Compute the gradient, cost and accuracy being centered in the previous joint tensor
-            new_B_jminusone_j=self.gradient_descent_step( B_l=B_jminusone_j, gradient_B_l=grad) # Compute update joint tensor
-            A_j_minusone,A_j=self.separate_B_l(left_or_right=left_or_right, updated_B_l=new_B_jminusone_j) # Returns new j-1, j tensors
-            self.mps[j-1]=A_j_minusone
-            self.mps[j]=A_j
-            self.update_data(left_or_right=left_or_right)# Computes update of the data with the previous optimized MPS in the sides j-1,j.
+            B_jminusone_j=self.contract_with_neighbour_tensor_rl() # Compute the joint tensor on the j-1, j sides
+            cost, grad, accuracy = self.compute_cost_and_gradient_B_l_rl() # Compute the gradient, cost and accuracy being centered in the previous joint tensor
+            new_B_jminusone_j=self.gradient_descent_step(B_l=B_jminusone_j,gradient_B_l=grad) # Compute update joint tensor
+            A_j_adjacent,A_j=self.separate_B_l_rl(updated_B_l=new_B_jminusone_j) # Returns new j-1, j tensors
+            self.Bj=A_j
+            self.B_jadjacent=A_j_adjacent
+            
+            for index_training in range((self.y).shape[0]):
+                new_side.append(self.update_single_data_right(i=index_training))# Computes update of the data with the previous optimized MPS in the sides j-1,j.
+
         
-        return self.mps,self.data, cost, accuracy
+        return A_j, A_j_adjacent, new_side , cost, accuracy
+        
+        
     
